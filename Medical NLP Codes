@@ -1,0 +1,190 @@
+1. Data Assumption
+
+Your dataset contains a free-text medicine description, for example:
+
+Indications
+
+Composition
+
+Dosage
+
+Mechanism
+
+Warnings
+
+We will generate structured summaries such as:
+
+{
+  "Indication": "...",
+  "Mechanism": "...",
+  "Dosage": "...",
+  "Warnings": "..."
+}
+
+2. Basic Text Cleaning
+import re
+import pandas as pd
+
+def clean_text(text):
+    text = text.lower()
+    text = re.sub(r"\s+", " ", text)
+    text = re.sub(r"[^a-z0-9.,;:()%-]", " ", text)
+    return text.strip()
+
+df["clean_text"] = df["text"].apply(clean_text)
+
+3. Extractive Structured Summary (Rule + NLP)
+
+This works well when descriptions follow semi-consistent patterns.
+
+import spacy
+
+nlp = spacy.load("en_core_web_sm")
+
+def extract_sections(text):
+    doc = nlp(text)
+    sentences = [sent.text for sent in doc.sents]
+
+    summary = {
+        "Indication": [],
+        "Mechanism": [],
+        "Dosage": [],
+        "Warnings": []
+    }
+
+    for s in sentences:
+        s_low = s.lower()
+        if any(k in s_low for k in ["indicated", "used for", "treatment of"]):
+            summary["Indication"].append(s)
+        elif any(k in s_low for k in ["mechanism", "inhibits", "blocks", "agonist"]):
+            summary["Mechanism"].append(s)
+        elif any(k in s_low for k in ["dose", "dosage", "administered"]):
+            summary["Dosage"].append(s)
+        elif any(k in s_low for k in ["contraindicated", "warning", "adverse"]):
+            summary["Warnings"].append(s)
+
+    return {k: " ".join(v) for k, v in summary.items()}
+
+df["structured_summary"] = df["clean_text"].apply(extract_sections)
+
+4. Keyword-Guided Abstractive Summaries (Transformer)
+
+This generates concise, human-like summaries per section.
+
+Install dependencies
+pip install transformers torch
+
+Code
+from transformers import pipeline
+
+summarizer = pipeline(
+    "summarization",
+    model="facebook/bart-large-cnn"
+)
+
+def abstractive_section_summary(text, max_len=60):
+    result = summarizer(
+        text,
+        max_length=max_len,
+        min_length=20,
+        do_sample=False
+    )
+    return result[0]["summary_text"]
+
+# Example: summarize indication sentences
+df["indication_summary"] = df["structured_summary"].apply(
+    lambda x: abstractive_section_summary(x["Indication"]) if x["Indication"] else ""
+)
+
+5. LLM-Based Fully Structured Summaries (Recommended)
+
+This approach produces clean JSON-like outputs, ideal for downstream analytics.
+
+from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
+
+model_name = "google/flan-t5-base"
+tokenizer = AutoTokenizer.from_pretrained(model_name)
+model = AutoModelForSeq2SeqLM.from_pretrained(model_name)
+
+def structured_llm_summary(text):
+    prompt = f"""
+    Extract a structured summary from the following medicine description.
+    Return the result in JSON format with fields:
+    Indication, Mechanism, Dosage, Warnings.
+
+    Text:
+    {text}
+    """
+
+    inputs = tokenizer(prompt, return_tensors="pt", truncation=True, max_length=512)
+    outputs = model.generate(
+        **inputs,
+        max_length=300,
+        do_sample=False
+    )
+
+    return tokenizer.decode(outputs[0], skip_special_tokens=True)
+
+df["llm_structured_summary"] = df["clean_text"].apply(structured_llm_summary)
+
+6. Named Entity–Driven Structured Summaries (Medical NLP)
+
+Extract drug names, conditions, doses to enrich summaries.
+
+import scispacy
+import spacy
+from scispacy.linking import EntityLinker
+
+nlp_sci = spacy.load("en_core_sci_sm")
+nlp_sci.add_pipe("entity_linker", config={"resolve_abbreviations": True})
+
+def extract_entities(text):
+    doc = nlp_sci(text)
+    entities = {
+        "Drugs": set(),
+        "Diseases": set(),
+        "Chemicals": set()
+    }
+
+    for ent in doc.ents:
+        if ent.label_ in ["CHEMICAL", "DRUG"]:
+            entities["Drugs"].add(ent.text)
+        elif ent.label_ in ["DISEASE", "CONDITION"]:
+            entities["Diseases"].add(ent.text)
+
+    return {k: list(v) for k, v in entities.items()}
+
+df["medical_entities"] = df["clean_text"].apply(extract_entities)
+
+7. Final Combined Structured Output
+df["final_summary"] = df.apply(lambda row: {
+    "Indication": row["structured_summary"]["Indication"],
+    "Mechanism": row["structured_summary"]["Mechanism"],
+    "Dosage": row["structured_summary"]["Dosage"],
+    "Warnings": row["structured_summary"]["Warnings"],
+    "Key_Entities": row["medical_entities"]
+}, axis=1)
+
+8. Output Example
+{
+  "Indication": "Used for the treatment of rheumatoid arthritis.",
+  "Mechanism": "Acts as a selective TNF-alpha inhibitor.",
+  "Dosage": "Administered orally once daily.",
+  "Warnings": "Contraindicated in patients with severe infection.",
+  "Key_Entities": {
+    "Drugs": ["adalimumab"],
+    "Diseases": ["rheumatoid arthritis"]
+  }
+}
+
+9. What This Demonstrates (for Evaluators)
+
+NLP preprocessing
+
+Rule-based + ML hybrid design
+
+Transformer-based summarization
+
+Structured data extraction
+
+Medical text understanding
